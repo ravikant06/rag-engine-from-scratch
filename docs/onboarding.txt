@@ -1,0 +1,32 @@
+Engineering Onboarding Checklist
+
+Welcome to Acme Commerce engineering. Complete these in your first week.
+
+Day 1
+- Get access to GitHub org "acme", Slack, PagerDuty and Grafana from your manager.
+- Install: Python 3.11, Go 1.22, Docker Desktop, gcloud CLI, kubectl, helm.
+- Read architecture.md and api.md.
+
+Day 2
+- Clone the service repos. Each has a Makefile; `make dev` starts the service
+  locally with docker-compose (Postgres + a single-node Kafka).
+- Run the test suite with `make test`.
+
+Day 3
+- Shadow the on-call engineer for your team. Read troubleshooting.md.
+- Read incident-101.md; it is our reference postmortem.
+
+Day 4-5
+- Pick a "good first issue" ticket in Jira. Open a PR. Two approvals are
+  required to merge to main, one of them from a code owner.
+- Deployments to dev happen automatically on merge. Watch yours in GitHub Actions.
+
+Code standards
+- Python: ruff for linting and formatting, mypy in strict mode, pytest.
+- Go: gofmt, golangci-lint.
+- Every PR must include tests. Coverage must not decrease.
+- Commit messages follow Conventional Commits (feat:, fix:, chore:).
+
+On-call
+- Engineers join the rotation after 3 months. Rotations are one week long,
+  Monday 10:00 to Monday 10:00 UTC. Compensation is one day off per week on call.
