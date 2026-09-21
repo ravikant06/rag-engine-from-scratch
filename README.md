@@ -13,6 +13,8 @@ declining when the corpus does not contain one.
 
 **Stack:** Python 3.11 · Gemini (`gemini-embedding-001`) · Qdrant · Docker
 
+Design decisions, tradeoffs and known gaps are documented in [DESIGN.md](DESIGN.md).
+
 ## Architecture
 
 ```
@@ -44,20 +46,26 @@ docs/*.md, *.txt
 ```
 rag-project/
 ├── README.md
+├── DESIGN.md             # design decisions, tradeoffs, known gaps
 ├── requirements.txt
 ├── .env.example
 ├── docs/                 # sample engineering docs (Acme Commerce)
 ├── src/
 │   ├── config.py         # all settings, read from env / .env
-│   ├── loader.py         # read .md / .txt files
-│   ├── chunker.py        # sliding-window chunking with overlap
+│   ├── loader.py         # read .md / .txt files + document metadata
+│   ├── chunker.py        # sliding-window chunking + chunk metadata
 │   ├── embeddings.py     # embed_text(), embed_documents()
-│   ├── vector_store.py   # Qdrant create / upsert / search
+│   ├── vector_store.py   # Qdrant create / index / upsert / search
+│   ├── filters.py        # user parameters → Qdrant filter
 │   ├── rag.py            # retrieve → build_prompt → generate
-│   └── main.py           # optional interactive REPL
-└── scripts/
-    ├── ingest.py         # docs → Qdrant
-    └── ask.py            # question → answer
+│   ├── agent.py          # agentic retrieval: model picks its own filters
+│   ├── main.py           # interactive REPL
+│   └── llm/              # provider-neutral LLM access (Adapter pattern)
+├── scripts/
+│   ├── ingest.py         # docs → Qdrant
+│   └── ask.py            # question → answer, with explicit filters
+└── tests/
+    └── test_adapter.py   # agent loop driven by a FakeAdapter
 ```
 
 ## Prerequisites
@@ -120,7 +128,7 @@ python scripts/ingest.py
 
 # 6. Ask questions
 python scripts/ask.py "How is payment-service deployed?"
-python -m src.main          # or: interactive loop
+python -m src.main          # or: interactive loop (model picks its own filters)
 
 # 7. Stop Qdrant when done
 docker stop qdrant
@@ -136,15 +144,89 @@ All values are read in `src/config.py` and can be set in `.env`:
 | `GEMINI_API_KEY` | – | required |
 | `QDRANT_URL` | `http://localhost:6333` | where Qdrant listens |
 | `COLLECTION_NAME` | `engineering_docs` | Qdrant collection |
+| `TENANT_ID` | `default` | tenant stamped at ingest and enforced on every search |
 | `TOP_K` | `4` | chunks retrieved per question |
 | `CHUNK_SIZE` | `800` | characters per chunk (~200 tokens) |
 | `CHUNK_OVERLAP` | `150` | characters shared between adjacent chunks |
 | `EMBEDDING_MODEL` | `gemini-embedding-001` | GA embedding model |
 | `EMBEDDING_DIM` | `768` | output dims (768 / 1536 / 3072 supported) |
 | `GENERATION_MODEL` | `gemini-3.5-flash` | LLM for the final answer |
+| `LLM_PROVIDER` | `gemini` | `gemini` \| `openai` \| `anthropic` (see `src/llm/`) |
 
 If you change `EMBEDDING_MODEL` or `EMBEDDING_DIM`, delete the collection first
 (dashboard or `curl -X DELETE localhost:6333/collections/engineering_docs`) and re-ingest — vectors of different sizes cannot live in one collection.
+
+## Metadata filtering
+
+Each chunk carries metadata extracted from the documents themselves —
+`tenant_id`, `doc_type`, `heading`, `services`, `severity`, `date`, `owner`,
+plus lifecycle fields (`content_hash`, `ingested_at`, `batch_id`). None of it is
+added to the embedded text, so filters can change without re-embedding.
+
+```bash
+python scripts/ask.py "What went wrong with payments?" --doc-type incident
+python scripts/ask.py "How do we roll back?" --service payment-service
+python scripts/ask.py "Root cause?" --date-from 2026-03-01 --date-to 2026-03-31
+python scripts/ask.py "What are the rate limits?" --source api.md
+python scripts/ask.py --help          # all filters
+```
+
+`--doc-type`, `--source`, `--doc-id`, `--service`, `--severity` and `--owner`
+are repeatable and OR together; different filters AND together. An unknown
+filter name is rejected rather than silently ignored. Filters are applied
+*during* the vector search, so `TOP_K` chunks come from the matching subset.
+
+Metadata lives in the Qdrant payload, not in the vector, so refreshing it needs
+no embedding calls:
+
+```bash
+python scripts/ingest.py --payload-only
+```
+
+Valid only while chunk boundaries are unchanged — change `CHUNK_SIZE` or the
+chunking logic and a full `python scripts/ingest.py` is required.
+
+## Two ways to query
+
+**Explicit filters — `scripts/ask.py`.** The caller states the filters. Use this
+for scripting and for measuring retrieval, where filters must be held constant.
+
+**Agentic retrieval — `python -m src.main`.** Retrieval is exposed to the model
+as a `search_docs` tool, so it picks filters itself and can search again if one
+returns nothing:
+
+```
+> have we had any SEV-1 incidents?
+
+SEARCHES:
+  [1] query='SEV-1'   filters: tenant=default, doc_type=incident, severity=SEV-1
+      hits: 0
+  [2] query='SEV-1'   filters: tenant=default
+      hits: 4
+
+ANSWER:
+I could not find this in the documentation.
+```
+
+Every search is printed, because a wrongly-inferred filter silently hides the
+right answer. `python -m src.main --plain` bypasses tool calling for comparison.
+
+`tenant_id` is never a tool parameter — it is injected server-side. See
+[DESIGN.md](DESIGN.md) §D3.
+
+## Swapping the LLM provider
+
+`src/llm/` puts the three providers behind one interface, so `src/agent.py`
+imports no provider SDK and the retrieval loop is written once:
+
+```bash
+LLM_PROVIDER=openai GENERATION_MODEL=gpt-4o python -m src.main
+python tests/test_adapter.py     # drives the whole loop with a FakeAdapter
+```
+
+Only the Gemini adapter is verified against a live API. Design rationale, the
+per-provider envelope differences and the opaque-passthrough problem are in
+[DESIGN.md](DESIGN.md) §D9.
 
 ## Example questions
 

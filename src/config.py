@@ -19,9 +19,39 @@ EMBEDDING_MODEL = os.getenv("EMBEDDING_MODEL", "gemini-embedding-001")
 EMBEDDING_DIM = int(os.getenv("EMBEDDING_DIM", "768"))
 GENERATION_MODEL = os.getenv("GENERATION_MODEL", "gemini-3.5-flash")
 
+# Which LLM adapter to use: gemini | openai | anthropic (see src/llm/).
+# Swapping this also means setting a matching GENERATION_MODEL and API key.
+LLM_PROVIDER = os.getenv("LLM_PROVIDER", "gemini")
+
 # --- Qdrant ---
 QDRANT_URL = os.getenv("QDRANT_URL", "http://localhost:6333")
 COLLECTION_NAME = os.getenv("COLLECTION_NAME", "engineering_docs")
+
+# --- Multi-tenancy ---
+# Every chunk is stamped with this at ingest time, and every search is scoped
+# to it. One tenant can never retrieve another tenant's chunks.
+TENANT_ID = os.getenv("TENANT_ID", "default")
+
+# --- Metadata extraction ---
+# Service names we recognise in chunk text. Kept explicit rather than regexed
+# so "cross-service" and similar words do not become false positives.
+KNOWN_SERVICES = [
+    "payment-service",
+    "order-service",
+    "inventory-service",
+    "notification-service",
+    "api-gateway",
+]
+
+# Filename prefix -> doc_type. First match wins; anything unmatched is "guide".
+DOC_TYPE_RULES = [
+    ("incident", "incident"),
+    ("onboarding", "onboarding"),
+    ("troubleshooting", "runbook"),
+    ("api", "reference"),
+    ("database", "reference"),
+]
+DEFAULT_DOC_TYPE = "guide"
 
 # --- RAG knobs ---
 DOCS_DIR = PROJECT_ROOT / "docs"
