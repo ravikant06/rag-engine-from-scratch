@@ -14,12 +14,13 @@ def print_trace(steps: list[dict]) -> None:
     """Show which searches the model chose, so inferred filters are visible."""
     if not steps:
         return
-    print("SEARCHES:")
+    print("TOOL CALLS:")
     for i, step in enumerate(steps, 1):
         where = ", ".join(f"{k}={v}" for k, v in sorted(step["where"].items()))
-        print(f"  [{i}] query={step['query']!r}")
+        tool = step.get("tool", "search_docs")
+        print(f"  [{i}] {tool}" + (f" query={step['query']!r}" if step.get("query") else ""))
         print(f"      filters: tenant={config.TENANT_ID}{', ' + where if where else ''}")
-        print(f"      hits:    {step['count']}")
+        print(f"      results: {step['count']}")
     print()
 
 

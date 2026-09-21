@@ -192,8 +192,17 @@ chunking logic and a full `python scripts/ingest.py` is required.
 for scripting and for measuring retrieval, where filters must be held constant.
 
 **Agentic retrieval — `python -m src.main`.** Retrieval is exposed to the model
-as a `search_docs` tool, so it picks filters itself and can search again if one
-returns nothing:
+as two tools, and it picks both the tool and the filters:
+
+| Tool | Backed by | Answers |
+|---|---|---|
+| `search_docs` | vector search, top-k | "how is X deployed?" — finds passages |
+| `list_documents` | Qdrant `scroll` | "what incidents have we had?" — returns *every* match, so enumeration is exact |
+
+A top-k search can never say whether it left something out, which makes it the
+wrong tool for "what exists" questions; `list_documents` exists for those. The
+model can also enumerate first and use what it learns to filter the follow-up
+search. It retries with fewer filters when one returns nothing:
 
 ```
 > have we had any SEV-1 incidents?

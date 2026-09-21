@@ -30,8 +30,21 @@ SYSTEM_INSTRUCTION = """You answer questions about an engineering team's interna
 
 You cannot see the documents directly. Use the `search_docs` tool to retrieve them.
 
+Choosing a tool:
+- `list_documents` enumerates the corpus exactly. Use it whenever the question
+  asks what exists, how many there are, or to list things ("what incidents have
+  we had", "which runbooks exist"). It is the only way to know you have seen
+  everything.
+- `search_docs` finds passages that answer a specific question. It returns only
+  its best few matches and can never tell you whether more exist, so do not use
+  it to enumerate.
+- A listing question often needs both: `list_documents` to establish what exists,
+  then `search_docs` for the detail.
+
 Guidelines:
-- Always call `search_docs` at least once before answering.
+- Call a tool at least once before answering.
+- Do not repeat a search you have already run with the same or near-identical
+  arguments. If two searches have not helped, answer with what you have.
 - Set filters only when the question clearly implies them. An unnecessary
   filter can hide the correct answer.
 - If a filtered search returns nothing, search again with fewer filters
@@ -92,6 +105,56 @@ SEARCH_DOCS = ToolSpec(
 )
 
 
+LIST_DOCUMENTS = ToolSpec(
+    name="list_documents",
+    description=(
+        "List the documents in the corpus, optionally filtered. Returns every "
+        "match with its type, title, date and severity — not a ranked subset — "
+        "so it answers 'what exists', 'how many', and 'list all' questions "
+        "exactly. Use this instead of search_docs for enumeration."
+    ),
+    parameters={
+        "type": "object",
+        "properties": {
+            "doc_type": {
+                "type": "string",
+                "enum": ["guide", "reference", "incident", "runbook", "onboarding"],
+                "description": "Only documents of this class.",
+            },
+            "service": {
+                "type": "string",
+                "enum": list(config.KNOWN_SERVICES),
+                "description": "Only documents mentioning this service.",
+            },
+            "severity": {"type": "string", "description": "e.g. 'SEV-2'."},
+            "date_from": {"type": "string", "description": "YYYY-MM-DD."},
+            "date_to": {"type": "string", "description": "YYYY-MM-DD."},
+        },
+    },
+)
+
+TOOLS = [SEARCH_DOCS, LIST_DOCUMENTS]
+
+
+def _client_or_die():
+    client = vector_store.get_client()
+    if not client.collection_exists(config.COLLECTION_NAME):
+        raise SystemExit("Collection is empty. Run `python scripts/ingest.py` first.")
+    return client
+
+
+def _run_list(args: dict, tenant_id: str | None) -> list[dict]:
+    """Enumerate matching documents. tenant_id comes from us, as ever."""
+    where = {k: v for k, v in args.items() if v}
+    if trace.is_on():
+        trace.section("TOOL list_documents")
+        trace.kv("model filters", trace.compact_json(where) if where else "(none)")
+        trace.kv("tenant injected", tenant_id)
+
+    query_filter = filters.build_filter(tenant_id=tenant_id, **where)
+    return vector_store.list_documents(_client_or_die(), query_filter)
+
+
 def _run_search(args: dict, tenant_id: str | None, top_k: int) -> list[dict]:
     """Execute one tool call. tenant_id comes from us, never from the model."""
     query = args.get("query", "")
@@ -128,6 +191,15 @@ def _tool_payload(chunks: list[dict]) -> dict:
     }
 
 
+def _list_payload(documents: list[dict]) -> dict:
+    """Enumeration is exhaustive, and the model is told so explicitly."""
+    return {
+        "documents": documents,
+        "count": len(documents),
+        "complete": True,  # every match is included, not a ranked subset
+    }
+
+
 def answer(
     question: str,
     top_k: int = config.TOP_K,
@@ -157,32 +229,39 @@ def answer(
     steps: list[dict] = []
 
     for _ in range(MAX_STEPS):
-        reply = llm.complete(messages, tools=[SEARCH_DOCS], system=SYSTEM_INSTRUCTION)
+        reply = llm.complete(messages, tools=TOOLS, system=SYSTEM_INSTRUCTION)
 
         if not reply.wants_tools:
             answer_text = reply.text or "(empty response from model)"
             trace.section("DONE")
-            trace.kv("searches run", len(steps))
+            trace.kv("tool calls run", len(steps))
             trace.kv("unique chunks seen", len(seen))
             return list(seen.values()), answer_text, steps
 
         messages.append(Message.assistant(text=reply.text, tool_calls=reply.tool_calls))
 
         for call in reply.tool_calls:
-            chunks = _run_search(call.arguments, tenant_id, top_k)
-            for chunk in chunks:
-                seen.setdefault(chunk["chunk_id"], chunk)
+            if call.name == LIST_DOCUMENTS.name:
+                documents = _run_list(call.arguments, tenant_id)
+                payload = _list_payload(documents)
+                count = len(documents)
+            else:
+                chunks = _run_search(call.arguments, tenant_id, top_k)
+                for chunk in chunks:
+                    seen.setdefault(chunk["chunk_id"], chunk)
+                payload = _tool_payload(chunks)
+                count = len(chunks)
+
             steps.append(
                 {
+                    "tool": call.name,
                     "query": call.arguments.get("query", ""),
                     "where": {k: v for k, v in call.arguments.items() if k != "query" and v},
-                    "count": len(chunks),
+                    "count": count,
                 }
             )
             messages.append(
-                Message.tool(
-                    ToolResult(id=call.id, name=call.name, content=_tool_payload(chunks))
-                )
+                Message.tool(ToolResult(id=call.id, name=call.name, content=payload))
             )
 
     # Budget exhausted. Ask once more with no tools available, so the model has

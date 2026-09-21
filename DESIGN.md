@@ -192,9 +192,10 @@ Qdrant round trips versus 1 each for the fixed path — roughly 4–5× cost and
 latency, and *variable* per request. Production systems usually route simple
 queries to the fixed path and reserve the loop for queries that need it.
 
-*Observed quality issue.* The model sometimes spends its whole budget
-rephrasing rather than concluding. A richer empty result (for example, listing
-the severities actually present) would help it converge.
+*Observed quality issue, since addressed.* Tracing showed the model spending
+its entire budget rephrasing on an enumeration question — five searches for
+"what production outages happened?", because top-k retrieval cannot signal
+completeness. Fixed by D11.
 
 ### D9 — Adapter pattern at the LLM boundary
 
@@ -233,6 +234,38 @@ hatch for state it must preserve without understanding.
 
 *Verification status.* Only the Gemini adapter is exercised against a live API.
 OpenAI and Anthropic are written to their documented shapes but unverified.
+
+### D11 — Two tools: search for passages, scroll for enumeration
+
+`search_docs` runs a top-k vector search. `list_documents` runs a Qdrant
+`scroll` over the same filter and returns *every* match, aggregated by
+`doc_id`, with `"complete": true` in the payload.
+
+*Rationale.* Top-k similarity search is structurally unable to answer
+"what exists", "how many" or "list all". It returns k results whatever the
+truth is, and never signals whether anything was omitted — so a model asked to
+enumerate has no stopping condition and keeps rephrasing. Enumeration is a
+metadata question, not a similarity question, and needs a metadata operation.
+
+*Measured effect*, on "what production outages happened?":
+
+| | Before (search only) | After (both tools) |
+|---|---|---|
+| LLM calls | 6 | 3 |
+| Embedding calls | 5 | 1 |
+| Qdrant operations | 5 searches | 1 scroll + 1 search |
+| Final-call input tokens | 5,259 | 2,140 |
+| Outcome | budget exhausted, forced answer | answered normally |
+
+*Emergent behaviour worth noting.* The model now calls `list_documents` first,
+learns the filename, and passes `source=incident-101.md` to the follow-up
+`search_docs`. Enumerating first gives it a filter it could not otherwise have
+known — a pattern the system instruction suggests but does not script.
+
+*Why this was cheap.* The metadata from D2 was already indexed, so enumeration
+needed no new ingest work — only a different read path over the same payload.
+
+---
 
 ### D10 — Tracing as a Template Method on the adapter
 

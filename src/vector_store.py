@@ -128,6 +128,64 @@ def search(
     return chunks
 
 
+# Document-level fields surfaced when enumerating the corpus.
+_DOC_FIELDS = ("source", "title", "doc_type", "date", "severity", "owner")
+
+
+def list_documents(
+    client: QdrantClient,
+    query_filter: models.Filter | None = None,
+    limit: int = 500,
+) -> list[dict]:
+    """
+    Enumerate the distinct documents matching a filter.
+
+    Uses `scroll`, not vector search: this answers "what exists" exactly,
+    where a top_k similarity search can only ever return its best k guesses
+    and cannot tell the caller whether anything was left out.
+    """
+    if trace.is_on():
+        trace.section("QDRANT SCROLL (enumerate)")
+        trace.kv("collection", config.COLLECTION_NAME)
+        trace.kv("scan limit", limit)
+        trace.bullets("filter (must)", trace.describe_filter(query_filter))
+
+    with trace.timed() as elapsed:
+        points, _ = client.scroll(
+            collection_name=config.COLLECTION_NAME,
+            scroll_filter=query_filter,
+            limit=limit,
+            with_payload=True,
+            with_vectors=False,
+        )
+
+    documents: dict[str, dict] = {}
+    for point in points:
+        payload = point.payload or {}
+        doc_id = payload.get("doc_id", "?")
+        entry = documents.get(doc_id)
+        if entry is None:
+            entry = {"doc_id": doc_id, "chunks": 0}
+            entry.update({f: payload[f] for f in _DOC_FIELDS if payload.get(f)})
+            documents[doc_id] = entry
+        entry["chunks"] += 1
+
+    result = sorted(documents.values(), key=lambda d: d["doc_id"])
+    if trace.is_on():
+        trace.result(f"{len(points)} chunk(s) -> {len(result)} document(s)", elapsed[0])
+        trace.bullets(
+            "documents",
+            [
+                f"{d['doc_id']}  ({d.get('doc_type', '?')}, {d['chunks']} chunks)"
+                f"{'  ' + d['date'] if d.get('date') else ''}"
+                f"{'  ' + d['severity'] if d.get('severity') else ''}"
+                for d in result
+            ]
+            or ["(none)"],
+        )
+    return result
+
+
 def update_payloads(client: QdrantClient, chunks: list[dict]) -> int:
     """
     Overwrite payloads in place, leaving vectors untouched.
