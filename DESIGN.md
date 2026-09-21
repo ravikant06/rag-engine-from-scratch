@@ -234,6 +234,28 @@ hatch for state it must preserve without understanding.
 *Verification status.* Only the Gemini adapter is exercised against a live API.
 OpenAI and Anthropic are written to their documented shapes but unverified.
 
+### D10 — Tracing as a Template Method on the adapter
+
+`src/trace.py` prints each boundary: embedding input and vector, Qdrant filter
+and hits, the full prompt or message history, the model's reply, token usage
+and timings. Off by default; `--trace` or `RAG_TRACE=1` turns it on.
+
+*Rationale.* Debugging RAG means telling a retrieval failure from a generation
+failure. Without the filter and the retrieved scores in front of you, the two
+look identical from the answer alone.
+
+*Where the LLM logging lives.* `LLMAdapter.complete()` is a concrete Template
+Method that traces and then delegates to the abstract `_complete()`. Every
+adapter gets identical logging without copying it, and the tracing code cannot
+drift between providers.
+
+*Observation it surfaced.* Query vectors come back with `|v| ≈ 0.59`, not 1.0 —
+`gemini-embedding-001` does not normalise output when `output_dimensionality`
+truncates below its native size. This is harmless here because the collection
+uses `Distance.COSINE`, and Qdrant normalises internally for cosine. It would
+become a real bug if the distance were ever switched to dot product, where
+magnitude affects the score.
+
 ---
 
 ## 5. Failure modes

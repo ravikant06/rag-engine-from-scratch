@@ -74,7 +74,7 @@ class OpenAIAdapter(LLMAdapter):
             for t in tools
         ]
 
-    def complete(
+    def _complete(
         self,
         messages: Sequence[Message],
         *,

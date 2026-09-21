@@ -7,15 +7,15 @@ Run with:  python -m src.main
 """
 import argparse
 
-from src import agent, config, rag
+from src import agent, config, rag, trace
 
 
-def print_trace(trace: list[dict]) -> None:
+def print_trace(steps: list[dict]) -> None:
     """Show which searches the model chose, so inferred filters are visible."""
-    if not trace:
+    if not steps:
         return
     print("SEARCHES:")
-    for i, step in enumerate(trace, 1):
+    for i, step in enumerate(steps, 1):
         where = ", ".join(f"{k}={v}" for k, v in sorted(step["where"].items()))
         print(f"  [{i}] query={step['query']!r}")
         print(f"      filters: tenant={config.TENANT_ID}{', ' + where if where else ''}")
@@ -44,10 +44,17 @@ def main() -> None:
         action="store_true",
         help="skip tool calling; retrieve once with no filters",
     )
+    parser.add_argument("-t", "--trace", action="store_true",
+                        help="print every step: prompts, embeddings, filters, results")
+    parser.add_argument("--trace-full", action="store_true",
+                        help="like --trace, without truncating long prompts")
     args = parser.parse_args()
+    if args.trace or args.trace_full:
+        trace.enable(True, full=args.trace_full)
 
     mode = "plain retrieval" if args.plain else "tool-calling retrieval"
-    print(f"RAG REPL ({mode}, tenant={config.TENANT_ID}) - ask a question, or 'exit' to quit.")
+    tracing = ", trace on" if trace.is_on() else ""
+    print(f"RAG REPL ({mode}, tenant={config.TENANT_ID}{tracing}) - ask a question, or 'exit' to quit.")
 
     while True:
         question = input("\n> ").strip()
@@ -58,9 +65,9 @@ def main() -> None:
             chunks, final_answer = rag.answer(question)
             print_result(question, chunks, final_answer)
         else:
-            chunks, final_answer, trace = agent.answer(question)
+            chunks, final_answer, steps = agent.answer(question)
             print()
-            print_trace(trace)
+            print_trace(steps)
             print_result(question, chunks, final_answer)
 
 

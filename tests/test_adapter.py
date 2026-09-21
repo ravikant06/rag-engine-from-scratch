@@ -27,7 +27,7 @@ class FakeAdapter(LLMAdapter):
         self._replies = list(replies)
         self.calls: list[list[Message]] = []
 
-    def complete(self, messages: Sequence[Message], *, tools: Sequence[ToolSpec] = (),
+    def _complete(self, messages: Sequence[Message], *, tools: Sequence[ToolSpec] = (),
                  system: str | None = None) -> LLMResponse:
         self.calls.append(list(messages))
         return self._replies.pop(0)

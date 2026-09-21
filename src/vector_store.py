@@ -15,7 +15,7 @@ import uuid
 from qdrant_client import QdrantClient
 from qdrant_client.http import models
 
-from src import config
+from src import config, trace
 
 
 def get_client() -> QdrantClient:
@@ -96,14 +96,36 @@ def search(
     come from the matching subset — not from an unfiltered top_k that is then
     trimmed down.
     """
-    result = client.query_points(
-        collection_name=config.COLLECTION_NAME,
-        query=query_vector,
-        limit=top_k,
-        query_filter=query_filter,
-        with_payload=True,
-    )
-    return [{**hit.payload, "score": hit.score} for hit in result.points]
+    if trace.is_on():
+        trace.section("QDRANT SEARCH")
+        trace.kv("collection", config.COLLECTION_NAME)
+        trace.kv("limit (top_k)", top_k)
+        trace.kv("query vector", trace.preview_vector(query_vector))
+        trace.bullets("filter (must)", trace.describe_filter(query_filter))
+
+    with trace.timed() as elapsed:
+        result = client.query_points(
+            collection_name=config.COLLECTION_NAME,
+            query=query_vector,
+            limit=top_k,
+            query_filter=query_filter,
+            with_payload=True,
+        )
+
+    chunks = [{**hit.payload, "score": hit.score} for hit in result.points]
+    if trace.is_on():
+        trace.result(f"{len(chunks)} hit(s)", elapsed[0])
+        trace.bullets(
+            "results",
+            [
+                f"{i}. score={c['score']:.3f}  {c['source']}"
+                f"{' > ' + c['heading'] if c.get('heading') else ''}"
+                f"  (chunk {c['chunk_index']})"
+                for i, c in enumerate(chunks, 1)
+            ]
+            or ["(none — filter matched nothing)"],
+        )
+    return chunks
 
 
 def update_payloads(client: QdrantClient, chunks: list[dict]) -> int:

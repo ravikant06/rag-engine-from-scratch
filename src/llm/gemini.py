@@ -106,7 +106,7 @@ class GeminiAdapter(LLMAdapter):
         ]
 
     # --- the Target interface --------------------------------------------
-    def complete(
+    def _complete(
         self,
         messages: Sequence[Message],
         *,

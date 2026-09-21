@@ -21,7 +21,7 @@ Two deliberate design choices:
     filter silently hides the right answer, so the filters must be visible
     to whoever is reading the output.
 """
-from src import config, embeddings, filters, vector_store
+from src import config, embeddings, filters, trace, vector_store
 from src.llm import Message, ToolResult, ToolSpec, get_adapter
 
 MAX_STEPS = 5  # search rounds per question, before we force an answer
@@ -101,6 +101,12 @@ def _run_search(args: dict, tenant_id: str | None, top_k: int) -> list[dict]:
     if not client.collection_exists(config.COLLECTION_NAME):
         raise SystemExit("Collection is empty. Run `python scripts/ingest.py` first.")
 
+    if trace.is_on():
+        trace.section("TOOL search_docs")
+        trace.kv("query", repr(query))
+        trace.kv("model filters", trace.compact_json(where) if where else "(none)")
+        trace.kv("tenant injected", tenant_id)
+
     query_vector = embeddings.embed_text(query)
     query_filter = filters.build_filter(tenant_id=tenant_id, **where)
     return vector_store.search(client, query_vector, top_k, query_filter=query_filter)
@@ -137,15 +143,28 @@ def answer(
     llm = llm or get_adapter()
     tenant_id = tenant_id or config.TENANT_ID
 
+    trace.reset()
+    trace.section("QUERY RECEIVED")
+    trace.kv("question", repr(question))
+    trace.kv("mode", "agentic (model chooses filters)")
+    trace.kv("tenant", tenant_id)
+    trace.kv("top_k", top_k)
+    trace.kv("provider", getattr(llm, "provider", "?"))
+    trace.kv("max search rounds", MAX_STEPS)
+
     messages: list[Message] = [Message.user(question)]
     seen: dict[str, dict] = {}   # chunk_id -> chunk, deduped across searches
-    trace: list[dict] = []
+    steps: list[dict] = []
 
     for _ in range(MAX_STEPS):
         reply = llm.complete(messages, tools=[SEARCH_DOCS], system=SYSTEM_INSTRUCTION)
 
         if not reply.wants_tools:
-            return list(seen.values()), reply.text or "(empty response from model)", trace
+            answer_text = reply.text or "(empty response from model)"
+            trace.section("DONE")
+            trace.kv("searches run", len(steps))
+            trace.kv("unique chunks seen", len(seen))
+            return list(seen.values()), answer_text, steps
 
         messages.append(Message.assistant(text=reply.text, tool_calls=reply.tool_calls))
 
@@ -153,7 +172,7 @@ def answer(
             chunks = _run_search(call.arguments, tenant_id, top_k)
             for chunk in chunks:
                 seen.setdefault(chunk["chunk_id"], chunk)
-            trace.append(
+            steps.append(
                 {
                     "query": call.arguments.get("query", ""),
                     "where": {k: v for k, v in call.arguments.items() if k != "query" and v},
@@ -168,6 +187,7 @@ def answer(
 
     # Budget exhausted. Ask once more with no tools available, so the model has
     # to answer from what it already retrieved instead of searching forever.
+    trace.section("BUDGET EXHAUSTED - forcing an answer (no tools offered)")
     final = llm.complete(
         messages,
         system=(
@@ -179,5 +199,5 @@ def answer(
     return (
         list(seen.values()),
         final.text or "I could not find this in the documentation.",
-        trace,
+        steps,
     )

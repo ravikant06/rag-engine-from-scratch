@@ -214,6 +214,35 @@ right answer. `python -m src.main --plain` bypasses tool calling for comparison.
 `tenant_id` is never a tool parameter — it is injected server-side. See
 [DESIGN.md](DESIGN.md) §D3.
 
+## Tracing a query
+
+`--trace` prints every step of a query: the text embedded, the vector, the
+filter Qdrant received, the prompt or message history sent to the model, what
+it asked for back, token usage and per-step timings.
+
+```bash
+python scripts/ask.py "How is payment-service deployed?" --trace
+python -m src.main --trace
+RAG_TRACE=1 python -m src.main          # same, via the environment
+```
+
+```
+━━━ [5] QDRANT SEARCH ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+collection        : engineering_docs
+limit (top_k)     : 4
+query vector      : dim=768  [+0.0140, +0.0132, ...]  |v|=0.5948
+filter (must):
+│ tenant_id == 'default'
+│ doc_type in ['incident']
+│ services in ['payment-service']
+← 11 ms  3 hit(s)
+results:
+│ 1. score=0.698  incident-101.md > Incident 101 – Payment failures...
+```
+
+Long prompts are truncated; `--trace-full` (or `RAG_TRACE_FULL=1`) shows them
+whole.
+
 ## Swapping the LLM provider
 
 `src/llm/` puts the three providers behind one interface, so `src/agent.py`

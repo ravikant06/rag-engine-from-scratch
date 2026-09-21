@@ -6,7 +6,7 @@ Uses the official `google-genai` SDK (`from google import genai`).
 from google import genai
 from google.genai import types
 
-from src import config
+from src import config, trace
 
 # One shared client for the whole process.
 _client = genai.Client(api_key=config.require_api_key())
@@ -23,18 +23,30 @@ def _embed(texts: list[str], task_type: str) -> list[list[float]]:
     vectors = []
     for i in range(0, len(texts), _BATCH_SIZE):
         batch = texts[i : i + _BATCH_SIZE]
-        try:
-            response = _client.models.embed_content(
-                model=config.EMBEDDING_MODEL,
-                contents=batch,
-                config=types.EmbedContentConfig(
-                    task_type=task_type,
-                    output_dimensionality=config.EMBEDDING_DIM,
-                ),
-            )
-        except Exception as exc:  # network / auth / quota problems
-            raise SystemExit(f"Gemini embedding call failed: {exc}") from exc
-        vectors.extend(e.values for e in response.embeddings)
+        if trace.is_on():
+            trace.section(f"EMBEDDING -> {config.EMBEDDING_MODEL}")
+            trace.kv("task_type", task_type)
+            trace.kv("dimensions", config.EMBEDDING_DIM)
+            trace.kv("batch size", len(batch))
+            trace.bullets("input", [f"{t[:100]!r}" for t in batch[:3]])
+
+        with trace.timed() as elapsed:
+            try:
+                response = _client.models.embed_content(
+                    model=config.EMBEDDING_MODEL,
+                    contents=batch,
+                    config=types.EmbedContentConfig(
+                        task_type=task_type,
+                        output_dimensionality=config.EMBEDDING_DIM,
+                    ),
+                )
+            except Exception as exc:  # network / auth / quota problems
+                raise SystemExit(f"Gemini embedding call failed: {exc}") from exc
+
+        batch_vectors = [e.values for e in response.embeddings]
+        if trace.is_on() and batch_vectors:
+            trace.result(trace.preview_vector(batch_vectors[0]), elapsed[0])
+        vectors.extend(batch_vectors)
     return vectors
 
 

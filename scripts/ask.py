@@ -14,7 +14,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from src import config, filters, rag  # noqa: E402
+from src import config, filters, rag, trace  # noqa: E402
 from src.main import print_result  # noqa: E402
 
 
@@ -42,11 +42,17 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--owner", action="append", help="owning team")
     parser.add_argument("--date-from", help="YYYY-MM-DD (dated docs only)")
     parser.add_argument("--date-to", help="YYYY-MM-DD (dated docs only)")
+    parser.add_argument("-t", "--trace", action="store_true",
+                        help="print every step: prompts, embeddings, filters, results")
+    parser.add_argument("--trace-full", action="store_true",
+                        help="like --trace, without truncating long prompts")
     return parser.parse_args()
 
 
 def main() -> None:
     args = parse_args()
+    if args.trace or args.trace_full:
+        trace.enable(True, full=args.trace_full)
     question = " ".join(args.question)
 
     # Only non-empty filters are passed on; everything else stays unrestricted.
