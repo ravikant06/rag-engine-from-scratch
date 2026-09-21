@@ -249,8 +249,14 @@ results:
 │ 1. score=0.698  incident-101.md > Incident 101 – Payment failures...
 ```
 
-Long prompts are truncated; `--trace-full` (or `RAG_TRACE_FULL=1`) shows them
-whole.
+Long bodies are truncated; `--trace-full` (or `RAG_TRACE_FULL=1`) shows them
+whole, including the complete tool payloads — the actual chunk text the model
+received.
+
+On the agentic path there is no single prompt string: the model is sent the
+system instruction, the tool schemas and the whole message array. Every prior
+tool result stays in it, so each call reprints a `context size` line showing
+how much is being re-sent.
 
 ## Swapping the LLM provider
 

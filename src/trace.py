@@ -33,6 +33,11 @@ def is_on() -> bool:
     return _enabled
 
 
+def is_full() -> bool:
+    """True when RAG_TRACE_FULL / --trace-full asked for untruncated output."""
+    return _full
+
+
 def reset() -> None:
     """Restart step numbering — one query, one sequence."""
     global _step

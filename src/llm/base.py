@@ -11,6 +11,7 @@ with tools and nothing else. Embeddings are a different capability with a
 different shape, so they would get their own `EmbeddingAdapter` rather than
 being bolted on here.
 """
+import json
 from abc import ABC, abstractmethod
 from collections.abc import Sequence
 from typing import ClassVar
@@ -48,10 +49,25 @@ class LLMAdapter(ABC):
         trace.section(f"LLM CALL -> {self.provider} / {self.model}")
         if system:
             trace.body("system instruction", system, limit=700)
+        chars = self._context_chars(messages, system)
+        trace.kv(
+            "context size",
+            f"{len(messages)} turn(s), {chars:,} chars (~{chars // 4:,} tokens)",
+        )
         trace.bullets(
             f"messages ({len(messages)})",
             [self._describe(m) for m in messages],
         )
+        # The retrieved text lives inside the tool turns. Show it in full mode,
+        # since "what does the model actually see?" is the whole question.
+        if trace.is_full():
+            for i, message in enumerate(messages):
+                if message.role is Role.TOOL:
+                    trace.body(
+                        f"  tool result [{i}] {message.tool_result.name}",
+                        json.dumps(message.tool_result.content, indent=2,
+                                   ensure_ascii=False, default=str),
+                    )
         trace.kv("tools offered", ", ".join(t.name for t in tools) or "(none)")
 
         with trace.timed() as elapsed:
@@ -79,10 +95,20 @@ class LLMAdapter(ABC):
         """One-line rendering of a turn, for the trace."""
         if message.role is Role.TOOL:
             result = message.tool_result
-            return (
-                f"[tool:{result.name}] -> "
-                f"{result.content.get('count', '?')} result(s)"
-            )
+            content = result.content
+            count = content.get("count", "?")
+            if "results" in content:
+                items = "; ".join(
+                    f"{r['source']}"
+                    + (f" > {r['heading']}" if r.get("heading") else "")
+                    + f" ({r['score']}, {len(r.get('text', ''))} chars)"
+                    for r in content["results"]
+                )
+                return f"[tool:{result.name}] -> {count} chunk(s): {items}"
+            if "documents" in content:
+                items = ", ".join(d.get("doc_id", "?") for d in content["documents"])
+                return f"[tool:{result.name}] -> {count} doc(s): {items}"
+            return f"[tool:{result.name}] -> {trace.compact_json(content)}"
         if message.tool_calls:
             calls = ", ".join(
                 f"{c.name}({trace.compact_json(c.arguments, limit=160)})"
@@ -106,6 +132,24 @@ class LLMAdapter(ABC):
           - translate `tools` into the provider's tool envelope
           - return either text or tool_calls, never provider objects
         """
+
+    @staticmethod
+    def _context_chars(messages: Sequence[Message], system: str | None) -> int:
+        """
+        Rough size of what is being re-sent this round.
+
+        Every tool result stays in the conversation and is sent again on each
+        subsequent call, so this number grows with loop depth — the main cost
+        driver of agentic retrieval.
+        """
+        total = len(system or "")
+        for message in messages:
+            total += len(message.text or "")
+            for call in message.tool_calls:
+                total += len(str(call.arguments))
+            if message.tool_result:
+                total += len(str(message.tool_result.content))
+        return total
 
     def __repr__(self) -> str:  # pragma: no cover - debugging aid
         return f"<{type(self).__name__} model={self.model!r}>"

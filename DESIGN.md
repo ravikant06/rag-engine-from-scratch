@@ -235,6 +235,40 @@ hatch for state it must preserve without understanding.
 *Verification status.* Only the Gemini adapter is exercised against a live API.
 OpenAI and Anthropic are written to their documented shapes but unverified.
 
+### D12 — The agentic "prompt" is the message array, and it accumulates
+
+There is no assembled prompt string on the agentic path. What the model
+receives each round is the system instruction, the tool schemas, and the full
+message array — including every prior tool result, with the complete chunk text
+`_tool_payload` returned.
+
+Nothing is evicted. Each round re-sends everything before it, so cost grows
+with loop depth rather than staying flat:
+
+```
+round 1:  1 turn(s),  1,421 chars   in=873   tokens
+round 2:  3 turn(s),  1,727 chars   in=1,038
+round 3:  5 turn(s),  4,856 chars   in=2,151
+round 4:  7 turn(s),  5,847 chars   in=2,552
+```
+
+*Why keep it.* The accumulated history is exactly what makes retry work — the
+model can see that its own filter returned nothing. Truncating it would remove
+the mechanism that D8 depends on.
+
+*What it costs.* Input tokens grow roughly quadratically across a loop, and a
+long context invites lost-in-the-middle effects on the earliest results.
+Mitigations for a larger corpus, none implemented here: drop the `text` field
+from superseded tool results, keep only the top chunk per source, or summarise
+older rounds.
+
+*Made visible.* `complete()` prints a `context size` line per call, and each
+tool turn is summarised with its sources, scores and per-chunk character
+counts. `--trace-full` dumps the tool payloads verbatim, which is the only way
+to answer "what did the model actually see?" with certainty.
+
+---
+
 ### D11 — Two tools: search for passages, scroll for enumeration
 
 `search_docs` runs a top-k vector search. `list_documents` runs a Qdrant
